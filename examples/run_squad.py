@@ -471,7 +471,7 @@ def write_predictions(all_examples, all_features, all_results, n_best_size,
         prelim_predictions = []
         # keep track of the minimum score of null start+end of position 0
         score_null = 1000000  # large and positive
-        min_null_feature_index = 0  # the paragraph slice with min null score
+        min_null_feature_index = 0  # the paragraph slice with min mull score
         null_start_logit = 0  # the start logit at the slice with min null score
         null_end_logit = 0  # the end logit at the slice with min null score
         for (feature_index, feature) in enumerate(features):
@@ -620,7 +620,7 @@ def write_predictions(all_examples, all_features, all_results, n_best_size,
                 all_predictions[example.qas_id] = ""
             else:
                 all_predictions[example.qas_id] = best_non_null_entry.text
-            all_nbest_json[example.qas_id] = nbest_json
+                all_nbest_json[example.qas_id] = nbest_json
 
     with open(output_prediction_file, "w") as writer:
         writer.write(json.dumps(all_predictions, indent=4) + "\n")
@@ -657,8 +657,8 @@ def get_final_text(pred_text, orig_text, do_lower_case, verbose_logging=False):
     #
     # What we really want to return is "Steve Smith".
     #
-    # Therefore, we have to apply a semi-complicated alignment heuristic between
-    # `pred_text` and `orig_text` to get a character-to-character alignment. This
+    # Therefore, we have to apply a semi-complicated alignment heruistic between
+    # `pred_text` and `orig_text` to get a character-to-charcter alignment. This
     # can fail in certain cases in which case we just return `orig_text`.
 
     def _strip_spaces(text):
@@ -837,6 +837,16 @@ def main():
     parser.add_argument('--null_score_diff_threshold',
                         type=float, default=0.0,
                         help="If null_score - best_non_null is greater than the threshold predict null.")
+
+    parser.add_argument("--use_pretrained",
+                        action='store_true',
+                        help="Whether to use another task pretrained model.")
+
+    parser.add_argument("--other_task_pretrained",
+                        default=None,
+                        type=str,
+                        help="The directory where the other task model resides")
+
     args = parser.parse_args()
 
     if args.local_rank == -1 or args.no_cuda:
@@ -892,8 +902,13 @@ def main():
         if args.local_rank != -1:
             num_train_optimization_steps = num_train_optimization_steps // torch.distributed.get_world_size()
 
+    model = None
     # Prepare model
-    model = BertForQuestionAnswering.from_pretrained(args.bert_model,
+    if args.use_pretrained:
+        model = BertForQuestionAnswering.from_pretrained(args.other_task_pretrained,
+            cache_dir=None)
+    else:
+        model = BertForQuestionAnswering.from_pretrained(args.bert_model,
                 cache_dir=os.path.join(str(PYTORCH_PRETRAINED_BERT_CACHE), 'distributed_{}'.format(args.local_rank)))
 
     if args.fp16:
@@ -1022,7 +1037,10 @@ def main():
         model = BertForQuestionAnswering(config)
         model.load_state_dict(torch.load(output_model_file))
     else:
-        model = BertForQuestionAnswering.from_pretrained(args.bert_model)
+        if args.use_pretrained:
+            model = BertForQuestionAnswering.from_pretrained(args.other_task_pretrained, cache = None)
+        else:
+            model = BertForQuestionAnswering.from_pretrained(args.bert_model)
 
     model.to(device)
 

@@ -35,6 +35,7 @@ from pytorch_pretrained_bert.file_utils import PYTORCH_PRETRAINED_BERT_CACHE
 from pytorch_pretrained_bert.modeling import BertForSequenceClassification, BertConfig, WEIGHTS_NAME, CONFIG_NAME
 from pytorch_pretrained_bert.tokenization import BertTokenizer
 from pytorch_pretrained_bert.optimization import BertAdam, warmup_linear
+from sklearn.metrics import f1_score
 
 logging.basicConfig(format = '%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
                     datefmt = '%m/%d/%Y %H:%M:%S',
@@ -329,6 +330,10 @@ def accuracy(out, labels):
     outputs = np.argmax(out, axis=1)
     return np.sum(outputs == labels)
 
+def calculate_f1(out, labels):
+    outputs = np.argmax(out, axis=1)
+    return f1_score(labels, outputs, average='micro')
+
 def main():
     parser = argparse.ArgumentParser()
 
@@ -417,6 +422,15 @@ def main():
                         help="Loss scaling to improve fp16 numeric stability. Only used when fp16 set to True.\n"
                              "0 (default value): dynamic loss scaling.\n"
                              "Positive power of 2: static loss scaling value.\n")
+    parser.add_argument("--use_pretrained",
+                        action='store_true',
+                        help="Whether to use another task pretrained model.")
+
+    parser.add_argument("--other_task_pretrained",
+                        default=None,
+                        type=str,
+                        help="The directory where the other task model resides")
+
     parser.add_argument('--server_ip', type=str, default='', help="Can be used for distant debugging.")
     parser.add_argument('--server_port', type=str, default='', help="Can be used for distant debugging.")
     args = parser.parse_args()
@@ -496,9 +510,11 @@ def main():
 
     # Prepare model
     cache_dir = args.cache_dir if args.cache_dir else os.path.join(str(PYTORCH_PRETRAINED_BERT_CACHE), 'distributed_{}'.format(args.local_rank))
-    model = BertForSequenceClassification.from_pretrained(args.bert_model,
-              cache_dir=cache_dir,
+
+    model = BertForSequenceClassification.from_pretrained(args.other_task_pretrained,
+              cache_dir=None,
               num_labels = num_labels)
+
     if args.fp16:
         model.half()
     model.to(device)
@@ -594,6 +610,7 @@ def main():
                     optimizer.zero_grad()
                     global_step += 1
 
+    if args.do_train:
         # Save a trained model and the associated configuration
         model_to_save = model.module if hasattr(model, 'module') else model  # Only save the model it-self
         output_model_file = os.path.join(args.output_dir, WEIGHTS_NAME)
@@ -607,7 +624,11 @@ def main():
         model = BertForSequenceClassification(config, num_labels=num_labels)
         model.load_state_dict(torch.load(output_model_file))
     else:
-        model = BertForSequenceClassification.from_pretrained(args.bert_model, num_labels=num_labels)
+        if not args.use_pretrained:
+            model = BertForSequenceClassification.from_pretrained(args.bert_model, num_labels=num_labels)
+        else:
+            model = BertForSequenceClassification.from_pretrained(args.other_task_pretrained, num_labels=num_labels)
+            print('Using model from: ' + str(args.other_task_pretrained))
     model.to(device)
 
     if args.do_eval and (args.local_rank == -1 or torch.distributed.get_rank() == 0):
@@ -627,7 +648,7 @@ def main():
         eval_dataloader = DataLoader(eval_data, sampler=eval_sampler, batch_size=args.eval_batch_size)
 
         model.eval()
-        eval_loss, eval_accuracy = 0, 0
+        eval_loss, eval_accuracy, eval_f1 = 0, 0, 0
         nb_eval_steps, nb_eval_examples = 0, 0
 
         for input_ids, input_mask, segment_ids, label_ids in tqdm(eval_dataloader, desc="Evaluating"):
@@ -643,22 +664,27 @@ def main():
             logits = logits.detach().cpu().numpy()
             label_ids = label_ids.to('cpu').numpy()
             tmp_eval_accuracy = accuracy(logits, label_ids)
+            tmp_eval_f1 = calculate_f1(logits, label_ids)
 
             eval_loss += tmp_eval_loss.mean().item()
             eval_accuracy += tmp_eval_accuracy
+            eval_f1 += tmp_eval_f1
 
             nb_eval_examples += input_ids.size(0)
             nb_eval_steps += 1
 
         eval_loss = eval_loss / nb_eval_steps
         eval_accuracy = eval_accuracy / nb_eval_examples
+        eval_f1_by_steps = eval_f1 / nb_eval_steps
         loss = tr_loss/nb_tr_steps if args.do_train else None
         result = {'eval_loss': eval_loss,
                   'eval_accuracy': eval_accuracy,
+                  'eval_f1_steps': eval_f1_by_steps,
                   'global_step': global_step,
                   'loss': loss}
 
         output_eval_file = os.path.join(args.output_dir, "eval_results.txt")
+        print("Saving results to: " + str(output_eval_file))
         with open(output_eval_file, "w") as writer:
             logger.info("***** Eval results *****")
             for key in sorted(result.keys()):

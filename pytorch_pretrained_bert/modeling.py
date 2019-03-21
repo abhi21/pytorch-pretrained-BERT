@@ -582,6 +582,9 @@ class BertPreTrainedModel(nn.Module):
         if state_dict is None and not from_tf:
             weights_path = os.path.join(serialization_dir, WEIGHTS_NAME)
             state_dict = torch.load(weights_path, map_location='cpu' if not torch.cuda.is_available() else None)
+            state_dict.pop('classifier.weight', None)
+            state_dict.pop('classifier.bias', None)
+            #print(state_dict.items()) 
         if tempdir:
             # Clean up temp dir
             shutil.rmtree(tempdir)
